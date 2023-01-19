@@ -27,6 +27,7 @@ var EVENT_CONSOLE_CARET = 0x4001;
 var EVENT_CONSOLE_END_APPLICATION = 0x4007;
 var WINEVENT_OUTOFCONTEXT = 0x000;
 var WINEVENT_SKIPOWNPROCESS = 0x0002;
+var WINEVENT_INCONTEXT = 0x0004;
 var CREATE_NEW_PROCESS_GROUP = 0x200;
 var EVENT_CONSOLE_UPDATE_REGION = 0x4002;
 var EVENT_CONSOLE_UPDATE_SIMPLE = 0x4003;
@@ -42,7 +43,7 @@ var si = GM.CreateVariable(GM.PointerSize == 4 ? 68 : 104);
 var pi = GM.CreateVariable(GM.PointerSize == 4 ? 16 : 24);
 
 si.Deref(0, 4).toBuffer().writeUInt32LE(GM.PointerSize == 4 ? 68 : 104);                    // si.cb
-// si.Deref(GM.PointerSize == 4 ? 48 : 64, 2).toBuffer().writeUInt16LE(SW_HIDE | SW_MINIMIZE); // si.wShowWindow
+//si.Deref(GM.PointerSize == 4 ? 48 : 64, 2).toBuffer().writeUInt16LE(SW_HIDE | SW_MINIMIZE); // si.wShowWindow
 si.Deref(GM.PointerSize == 4 ? 48 : 64, 2).toBuffer().writeUInt16LE(SW_SHOW); // si.wShowWindow
 si.Deref(GM.PointerSize == 4 ? 44 : 60, 4).toBuffer().writeUInt32LE(STARTF_USESHOWWINDOW);  // si.dwFlags;
 
@@ -83,11 +84,11 @@ function windows_terminal() {
     
     var currentX = 0;
     var currentY = 0;
+
+    this.rowOffset = 0;
     
     this._scrx = 0;
     this._scry = 0;
-
-    this.testCounter = 0;
     
     this.SendCursorUpdate = function () {
         var newCsbi = GM.CreateVariable(22);
@@ -228,7 +229,7 @@ function windows_terminal() {
         }
 
         // Hide the console window
-        // this._user32.ShowWindow(this._kernel32.GetConsoleWindow().Val, SW_HIDE);
+        //this._user32.ShowWindow(this._kernel32.GetConsoleWindow().Val, SW_HIDE);
 
         this.ClearScreen();
         this._hookThread(terminalTarget).then(function ()
@@ -345,7 +346,7 @@ function windows_terminal() {
         ret.terminal = this;
         this._ConsoleWinEventProc = GM.GetGenericGlobalCallback(7);
         this._ConsoleWinEventProc.terminal = this;
-        var p = this._user32.SetWinEventHook.async(EVENT_CONSOLE_CARET, EVENT_CONSOLE_END_APPLICATION, 0, this._ConsoleWinEventProc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+        var p = this._user32.SetWinEventHook.async(EVENT_CONSOLE_CARET, EVENT_CONSOLE_END_APPLICATION, 0, this._ConsoleWinEventProc, 0, 0, WINEVENT_INCONTEXT | WINEVENT_SKIPOWNPROCESS);
         p.ready = ret;
         p.terminal = this;
         p.then(function (hwinEventHook)
@@ -393,11 +394,19 @@ function windows_terminal() {
                         buffer = this.terminal._GetScreenBuffer(LOWORD(idObject.Val), HIWORD(idObject.Val), LOWORD(idChild.Val), HIWORD(idChild.Val));
                         //console.log('UPDATE REGION: [Left: ' + LOWORD(idObject.Val) + ' Top: ' +  HIWORD(idObject.Val) + ' Right: ' + LOWORD(idChild.Val) + ' Bottom: ' + HIWORD(idChild.Val) + ']');
                         this.terminal._SendDataBuffer(buffer);
+
+                        if (HIWORD(idChild.Val) === 24) {
+                            console.log('Put the cursor at its home coordinates');
+                            // Put the cursor at its home coordinates.
+                            var coordScreen = GM.CreateVariable(4);
+                            this._kernel32.SetConsoleCursorPosition(this._stdoutput, coordScreen.Deref(0, 4).toBuffer().readUInt32LE());
+                            // Update offet.
+                            this.rowOffset += 25;
+                        }
                     }
                     break;
                 case EVENT_CONSOLE_UPDATE_SIMPLE:
                     // A single character has changed
-                    console.log(this.terminal.testCounter)
                     //console.log('UPDATE SIMPLE: [X: ' + LOWORD(idObject.Val) + ' Y: ' + HIWORD(idObject.Val) + ' Char: ' + LOWORD(idChild.Val) + ' Attr: ' + HIWORD(idChild.Val) + ']');
                     var simplebuffer = { data: [ Buffer.alloc(1, LOWORD(idChild.Val)) ], attributes: [ HIWORD(idChild.Val) ], width: 1, height: 1, x: LOWORD(idObject.Val), y: HIWORD(idObject.Val) };
                     this.terminal._SendDataBuffer(simplebuffer);
@@ -405,8 +414,7 @@ function windows_terminal() {
                 case EVENT_CONSOLE_UPDATE_SCROLL:
                     // The console has scrolled
                     //console.log('UPDATE SCROLL: [dx: ' + idObject.Val + ' dy: ' + idChild.Val + ']');
-                    this.terminal.testCounter = this.terminal.testCounter + 1;
-                    // this.terminal._SendScroll(idObject.Val, idChild.Val);
+                    this.terminal._SendScroll(idObject.Val, idChild.Val);
                     break;
                 case EVENT_CONSOLE_LAYOUT:
                     // The console layout has changed.
@@ -608,7 +616,7 @@ function windows_terminal() {
         // Lets convert the buffer into something simpler
         //var retVal = { data: Buffer.alloc((dw - dx + 1) * (dh - dy + 1)), attributes: Buffer.alloc((dw - dx + 1) * (dh - dy + 1)), width: dw - dx + 1, height: dh - dy + 1, x: dx, y: dy };
 
-        var retVal = { data: [], attributes: [], width: ex - sx + 1, height: ey - sy + 1, x: sx, y: sy };
+        var retVal = { data: [], attributes: [], width: ex - sx + 1, height: ey - sy + 1, x: sx, y: sy + rowOffset };
         var x, y, line, ifo, tmp, lineWidth = ex - sx + 1;
 
         for (y = 0; y <= (ey - sy) ; ++y)

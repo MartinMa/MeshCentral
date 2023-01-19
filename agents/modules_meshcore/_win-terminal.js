@@ -25,6 +25,7 @@ var STD_INPUT_HANDLE = -10;
 var STD_OUTPUT_HANDLE = -11;
 var EVENT_CONSOLE_CARET = 0x4001;
 var EVENT_CONSOLE_END_APPLICATION = 0x4007;
+var WINEVENT_INCONTEXT = 0x0004;
 var WINEVENT_OUTOFCONTEXT = 0x000;
 var WINEVENT_SKIPOWNPROCESS = 0x0002;
 var CREATE_NEW_PROCESS_GROUP = 0x200;
@@ -80,14 +81,19 @@ function windows_terminal() {
     this._kernel32.CreateMethod('TerminateProcess');
     this._kernel32.CreateMethod('WaitForSingleObject');
     this._kernel32.CreateMethod('WriteConsoleInputA');
+    this._kernel32.CreateMethod('FreeConsole'); // TEST
+    this._kernel32.CreateMethod('GetLargestConsoleWindowSize'); // TEST
     
-    var currentX = 0;
-    var currentY = 0;
+    this.currentX = 0;
+    this.currentY = 0;
+
+    this.rowOffset = 0;
+    this.isClearing = false;
+
+    this.testCounter = 0;
     
     this._scrx = 0;
     this._scry = 0;
-
-    this.testCounter = 0;
     
     this.SendCursorUpdate = function () {
         var newCsbi = GM.CreateVariable(22);
@@ -137,6 +143,9 @@ function windows_terminal() {
         // https://learn.microsoft.com/en-us/windows/console/setconsolewindowinfo
         //
 
+        this.isClearing = true;
+        console.log('isClearing = true');
+
         var CONSOLE_SCREEN_BUFFER_INFO = GM.CreateVariable(22);
         if (this._kernel32.GetConsoleScreenBufferInfo(this._stdoutput, CONSOLE_SCREEN_BUFFER_INFO).Val == 0) { return; }
         
@@ -163,6 +172,9 @@ function windows_terminal() {
         rect.Deref(6, 2).toBuffer().writeUInt16LE(srWindow.readUInt16LE(6) - srWindow.readUInt16LE(2));
         
         this._kernel32.SetConsoleWindowInfo(this._stdoutput, 1, rect);
+
+        this.isClearing = false;
+        console.log('isClearing = false');
     }
     
     // This does a rudimentary check if the platform is capable of PowerShell
@@ -181,6 +193,7 @@ function windows_terminal() {
     // Starts a Legacy Windows Terminal Session
     this.StartEx = function Start(CONSOLE_SCREEN_WIDTH, CONSOLE_SCREEN_HEIGHT, terminalTarget)
     {
+        console.log('StartEx');
         // The older windows terminal does not support 
         CONSOLE_SCREEN_WIDTH = 80;
         CONSOLE_SCREEN_HEIGHT = 25;
@@ -190,22 +203,43 @@ function windows_terminal() {
             throw ('Concurrent terminal sessions are not supported on Windows.');
         }
         this.stopping = null;
+        // TEST START
+        this._kernel32.FreeConsole();
+        // TEST END
+        // Retrieves the window handle used by the console associated with the calling process.
+        console.log('GetConsoleWindow()');
         if (this._kernel32.GetConsoleWindow().Val == 0) {
+            // Allocates a new console for the calling process.
+            // A process can be associated with only one console, so the AllocConsole function fails if the calling process already has a console.
+            console.log('AllocConsole()');
             if (this._kernel32.AllocConsole().Val == 0) {
                 throw ('AllocConsole failed with: ' + this._kernel32.GetLastError().Val);
             }
         }
         
         this._stdinput = this._kernel32.GetStdHandle(STD_INPUT_HANDLE);
+        // CreateConsoleScreenBuffer oder GetConsoleScreenBuffer
         this._stdoutput = this._kernel32.GetStdHandle(STD_OUTPUT_HANDLE);
         this._connected = false;
 
         // Coord structure can be found at: https://learn.microsoft.com/en-us/windows/console/coord-str
-        var coordScreen = GM.CreateVariable(4); 
+        var coordScreen = GM.CreateVariable(4);
+
+        /*coordScreen.Deref(0, 4).toBuffer().writeUInt32LE(
+            this._kernel32.GetLargestConsoleWindowSize(this._stdoutput).Val
+        );
+        console.log('coordScreen (1) ' + coordScreen.Deref(0, 2).toBuffer().readUInt16LE());
+        console.log('coordScreen (2) ' + coordScreen.Deref(2, 2).toBuffer().readUInt16LE());*/
+
         coordScreen.Deref(0, 2).toBuffer().writeUInt16LE(CONSOLE_SCREEN_WIDTH);
         coordScreen.Deref(2, 2).toBuffer().writeUInt16LE(CONSOLE_SCREEN_HEIGHT);
+        console.log('coordScreen (1b) ' + coordScreen.Deref(0, 2).toBuffer().readUInt16LE());
+        console.log('coordScreen (2b) ' + coordScreen.Deref(2, 2).toBuffer().readUInt16LE());
         
+        // TODO Why not define top and left of rect?
         var rect = GM.CreateVariable(8);
+        rect.Deref(0, 2).toBuffer().writeUInt16LE(0); // new
+        rect.Deref(2, 2).toBuffer().writeUInt16LE(0); // new
         rect.Deref(4, 2).toBuffer().writeUInt16LE(CONSOLE_SCREEN_WIDTH - 1);
         rect.Deref(6, 2).toBuffer().writeUInt16LE(CONSOLE_SCREEN_HEIGHT - 1);
         
@@ -213,6 +247,7 @@ function windows_terminal() {
         // Reference for SetConsoleWindowInfo can be found at:
         // https://learn.microsoft.com/en-us/windows/console/setconsolewindowinfo
         //
+        console.log('SetConsoleWindowInfo()');
         if (this._kernel32.SetConsoleWindowInfo(this._stdoutput, 1, rect).Val == 0)
         {
             throw ('Failed to set Console Screen Size');
@@ -222,6 +257,7 @@ function windows_terminal() {
         // Reference for SetConsoleScreenBufferSize can be found at:
         // https://learn.microsoft.com/en-us/windows/console/setconsolescreenbuffersize
         //
+        console.log('SetConsoleScreenBufferSize()');
         if (this._kernel32.SetConsoleScreenBufferSize(this._stdoutput, coordScreen.Deref(0, 4).toBuffer().readUInt32LE()).Val == 0)
         {
             throw ('Failed to set Console Buffer Size');
@@ -229,11 +265,15 @@ function windows_terminal() {
 
         // Hide the console window
         // this._user32.ShowWindow(this._kernel32.GetConsoleWindow().Val, SW_HIDE);
+        //console.log('ShowWindow()');
+        //this._user32.ShowWindow(this._kernel32.GetConsoleWindow().Val, SW_SHOW);
 
+        console.log('ClearScreen()');
         this.ClearScreen();
         this._hookThread(terminalTarget).then(function ()
         {
             // Hook Ready
+            console.log('Hook ready. Target: ' + this.userArgs[0]);
             this.terminal.StartCommand(this.userArgs[0]);
         }, console.log);
         this._stream = new duplex(
@@ -293,6 +333,7 @@ function windows_terminal() {
     };
     this.Start = function Start(CONSOLE_SCREEN_WIDTH, CONSOLE_SCREEN_HEIGHT)
     {
+        console.log('Start cmd.exe');
         return (this.StartEx(CONSOLE_SCREEN_WIDTH, CONSOLE_SCREEN_HEIGHT, process.env['windir'] + '\\System32\\cmd.exe'));
     }
     this.StartPowerShell = function StartPowerShell(CONSOLE_SCREEN_WIDTH, CONSOLE_SCREEN_HEIGHT)
@@ -301,15 +342,18 @@ function windows_terminal() {
         {
             if (require('fs').existsSync(process.env['windir'] + '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'))
             {
+                console.log('x64 system32 powershell.exe');
                 return (this.StartEx(CONSOLE_SCREEN_WIDTH, CONSOLE_SCREEN_HEIGHT, process.env['windir'] + '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'));
             }
             else
             {
+                console.log('x64 SysWow64 powershell.exe');
                 return (this.StartEx(CONSOLE_SCREEN_WIDTH, CONSOLE_SCREEN_HEIGHT, process.env['windir'] + '\\SysWow64\\WindowsPowerShell\\v1.0\\powershell.exe'));
             }
         }
         else
         {
+            console.log('x86 system32 powershell.exe');
             return (this.StartEx(CONSOLE_SCREEN_WIDTH, CONSOLE_SCREEN_HEIGHT, process.env['windir'] + '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'));
         }
     }
@@ -345,7 +389,8 @@ function windows_terminal() {
         ret.terminal = this;
         this._ConsoleWinEventProc = GM.GetGenericGlobalCallback(7);
         this._ConsoleWinEventProc.terminal = this;
-        var p = this._user32.SetWinEventHook.async(EVENT_CONSOLE_CARET, EVENT_CONSOLE_END_APPLICATION, 0, this._ConsoleWinEventProc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+        //var p = this._user32.SetWinEventHook.async(EVENT_CONSOLE_CARET, EVENT_CONSOLE_END_APPLICATION, 0, this._ConsoleWinEventProc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+        var p = this._user32.SetWinEventHook.async(EVENT_CONSOLE_CARET, EVENT_CONSOLE_END_APPLICATION, 0, this._ConsoleWinEventProc, 0, 0, WINEVENT_INCONTEXT | WINEVENT_SKIPOWNPROCESS);
         p.ready = ret;
         p.terminal = this;
         p.then(function (hwinEventHook)
@@ -384,39 +429,52 @@ function windows_terminal() {
                     // The console caret has moved
                     break;
                 case EVENT_CONSOLE_UPDATE_REGION:
+                    this.terminal.testCounter++;
                     // More than one character has changed
                     if (!this.terminal.connected) {
                         this.terminal.connected = true;
                         this.terminal._stream._promise._res();
+                        console.log('this.terminal._stream._promise._res();');
                     }
-                    if (this.terminal._scrollTimer == null) {
-                        buffer = this.terminal._GetScreenBuffer(LOWORD(idObject.Val), HIWORD(idObject.Val), LOWORD(idChild.Val), HIWORD(idChild.Val));
-                        //console.log('UPDATE REGION: [Left: ' + LOWORD(idObject.Val) + ' Top: ' +  HIWORD(idObject.Val) + ' Right: ' + LOWORD(idChild.Val) + ' Bottom: ' + HIWORD(idChild.Val) + ']');
-                        this.terminal._SendDataBuffer(buffer);
+                    //if (this.terminal._scrollTimer == null) {
+                    console.log('UPDATE REGION START');
+                    console.log('UPDATE REGION: [Left: ' + LOWORD(idObject.Val) + ' Top: ' +  HIWORD(idObject.Val) + ' Right: ' + LOWORD(idChild.Val) + ' Bottom: ' + HIWORD(idChild.Val) + ']');
+                    buffer = this.terminal._GetScreenBuffer(LOWORD(idObject.Val), HIWORD(idObject.Val), LOWORD(idChild.Val), HIWORD(idChild.Val));
+                    this.terminal._SendDataBuffer(buffer);
+
+                    // Last row reached?
+                    if (HIWORD(idChild.Val) === 24 && !this.terminal.isClearing) {
+                        console.log('Put the cursor at its home coordinates');
+                        // Put the cursor at its home coordinates.
+                        var coordScreen = GM.CreateVariable(4);
+                        this._kernel32.SetConsoleCursorPosition(this._stdoutput, coordScreen.Deref(0, 4).toBuffer().readUInt32LE());
+                        // this.terminal.ClearScreen();
+                        // Update offet.
+                        this.rowOffset += 25;
                     }
+                    //}
                     break;
                 case EVENT_CONSOLE_UPDATE_SIMPLE:
+                    console.log(this.terminal.testCounter);
                     // A single character has changed
-                    console.log(this.terminal.testCounter)
-                    //console.log('UPDATE SIMPLE: [X: ' + LOWORD(idObject.Val) + ' Y: ' + HIWORD(idObject.Val) + ' Char: ' + LOWORD(idChild.Val) + ' Attr: ' + HIWORD(idChild.Val) + ']');
+                    console.log('UPDATE SIMPLE: [X: ' + LOWORD(idObject.Val) + ' Y: ' + HIWORD(idObject.Val) + ' Char: ' + LOWORD(idChild.Val) + ' Attr: ' + HIWORD(idChild.Val) + ']');
                     var simplebuffer = { data: [ Buffer.alloc(1, LOWORD(idChild.Val)) ], attributes: [ HIWORD(idChild.Val) ], width: 1, height: 1, x: LOWORD(idObject.Val), y: HIWORD(idObject.Val) };
                     this.terminal._SendDataBuffer(simplebuffer);
                     break;
                 case EVENT_CONSOLE_UPDATE_SCROLL:
                     // The console has scrolled
-                    //console.log('UPDATE SCROLL: [dx: ' + idObject.Val + ' dy: ' + idChild.Val + ']');
-                    this.terminal.testCounter = this.terminal.testCounter + 1;
-                    // this.terminal._SendScroll(idObject.Val, idChild.Val);
+                    console.log('UPDATE SCROLL: [dx: ' + idObject.Val + ' dy: ' + idChild.Val + ']');
+                    this.terminal._SendScroll(idObject.Val, idChild.Val);
                     break;
                 case EVENT_CONSOLE_LAYOUT:
                     // The console layout has changed.
-                    //console.log('CONSOLE_LAYOUT');
+                    console.log('CONSOLE_LAYOUT');
                     //snprintf( Buf, 512, "Event Console LAYOUT!\r\n");
                     //SendLayout();
                     break;
                 case EVENT_CONSOLE_START_APPLICATION:
                     // A new console process has started
-                    //console.log('START APPLICATION: [PID: ' + idObject.Val + ' CID: ' + idChild.Val + ']');
+                    console.log('START APPLICATION: [PID: ' + idObject.Val + ' CID: ' + idChild.Val + ']');
                     //snprintf( Buf, 512, "Event Console START APPLICATION!\r\nProcess ID: %d  -  Child ID: %d\r\n\r\n", (int)idObject, (int)idChild);
                     //SendConsoleEvent(dwEvent, idObject, idChild);
                     break;
@@ -424,7 +482,7 @@ function windows_terminal() {
                     // A console process has exited
                     if (idObject.Val == this.terminal._hProcessID)
                     {
-                        //console.log('END APPLICATION: [PID: ' + idObject.Val + ' CID: ' + idChild.Val + ']');
+                        console.log('END APPLICATION: [PID: ' + idObject.Val + ' CID: ' + idChild.Val + ']');
                         this.terminal._hProcess = null;
                         this.terminal._stop().then(function () { console.log('STOPPED'); });
                     }
@@ -554,6 +612,7 @@ function windows_terminal() {
     // Get the current visible screen buffer
     this._GetScreenBuffer = function (sx, sy, ex, ey)
     {
+        console.log('_GetScreenBuffer');
         //
         // Reference for GetConsoleScreenBufferInfo() can be found at:
         // https://learn.microsoft.com/en-us/windows/console/getconsolescreenbufferinfo
@@ -570,6 +629,7 @@ function windows_terminal() {
         var nWidth = info.Deref(14, 2).toBuffer().readUInt16LE() - info.Deref(10, 2).toBuffer().readUInt16LE() + 1;
         var nHeight = info.Deref(16, 2).toBuffer().readUInt16LE() - info.Deref(12, 2).toBuffer().readUInt16LE() + 1;
 
+        // TODO Possibly dead code
         if (arguments[3] == null)
         {
             // Use Default Parameters
@@ -608,7 +668,7 @@ function windows_terminal() {
         // Lets convert the buffer into something simpler
         //var retVal = { data: Buffer.alloc((dw - dx + 1) * (dh - dy + 1)), attributes: Buffer.alloc((dw - dx + 1) * (dh - dy + 1)), width: dw - dx + 1, height: dh - dy + 1, x: dx, y: dy };
 
-        var retVal = { data: [], attributes: [], width: ex - sx + 1, height: ey - sy + 1, x: sx, y: sy };
+        var retVal = { data: [], attributes: [], width: ex - sx + 1, height: ey - sy + 1, x: sx, y: sy + this.rowOffset };
         var x, y, line, ifo, tmp, lineWidth = ex - sx + 1;
 
         for (y = 0; y <= (ey - sy) ; ++y)
@@ -629,6 +689,8 @@ function windows_terminal() {
     
     this._SendDataBuffer = function (data)
     {
+        console.log('_SendDataBuffer');
+        console.log('height: ' + data.height + ' x: ' + data.x + ', y: ' + data.y);
         // { data, attributes, width, height, x, y }
         if (this._stream != null)
         {
@@ -653,7 +715,8 @@ function windows_terminal() {
         // https://learn.microsoft.com/en-us/windows/console/getconsolescreenbufferinfo
         //
 
-        if (this._scrollTimer || this._stream == null) { return; }
+        // if (this._scrollTimer || this._stream == null) { return; }
+        if (this._stream == null) { return; }
         
         var info = GM.CreateVariable(22);
         if (this._kernel32.GetConsoleScreenBufferInfo(this._stdoutput, info).Val == 0) { throw ('Error getting screen buffer info'); }
@@ -667,24 +730,26 @@ function windows_terminal() {
         var buffer = this._GetScreenBuffer(0, 0, nWidth - 1, nHeight - 1);
         this._SendDataBuffer(buffer);
         
-        this._scrollTimer = setTimeout(function (self, nw, nh) {
+        /*this._scrollTimer = setTimeout(function (self, nw, nh) {
             var buffer = self._GetScreenBuffer(0, 0, nw - 1, nh - 1);
             self._SendDataBuffer(buffer);
             self._scrollTimer = null;
-        }, 250, this, nWidth, nHeight);
+        }, 250, this, nWidth, nHeight);*/
     }
     
     this.StartCommand = function StartCommand(target) {
+        console.log('StartCommand');
         if (this._kernel32.CreateProcessA(GM.CreateVariable(target), 0, 0, 0, 1, CREATE_NEW_PROCESS_GROUP, 0, 0, si, pi).Val == 0)
         {
             console.log('Error Spawning CMD');
             return;
         }
+        console.log('CreateProcessA finished');
         
         this._kernel32.CloseHandle(pi.Deref(GM.PointerSize, GM.PointerSize).Deref());           // pi.hThread
         this._hProcess = pi.Deref(0, GM.PointerSize).Deref();                                   // pi.hProcess
         this._hProcessID = pi.Deref(GM.PointerSize == 4 ? 8 : 16, 4).toBuffer().readUInt32LE(); // pi.dwProcessId
-        //console.log('Ready => hProcess: ' + this._hProcess._ptr + ' PID: ' + this._hProcessID);
+        console.log('Ready => hProcess: ' + this._hProcess._ptr + ' PID: ' + this._hProcessID);
     }
 }
 
