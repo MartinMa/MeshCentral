@@ -6354,6 +6354,10 @@ module.exports.CreateWebServer = function (parent, db, args, certificates, doneF
                 obj.app.get(url, handleRootRequest);
                 obj.app.post(url, obj.bodyParser.urlencoded({ extended: false }), handleRootPostRequest);
             }
+            // Hook for custom endpoints
+            try {
+                require('./custom/custom-endpoints.js').CreateCustomEndpoints(url, obj);
+            } catch (e) { }
             obj.app.get(url + 'refresh.ashx', function (req, res) { res.sendStatus(200); });
             if ((domain.myserver !== false) && ((domain.myserver == null) || (domain.myserver.backup === true))) { obj.app.get(url + 'backup.zip', handleBackupRequest); }
             if ((domain.myserver !== false) && ((domain.myserver == null) || (domain.myserver.restore === true))) { obj.app.post(url + 'restoreserver.ashx', obj.bodyParser.urlencoded({ extended: false }), handleRestoreRequest); }
