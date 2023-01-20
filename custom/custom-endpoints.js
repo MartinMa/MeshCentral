@@ -58,7 +58,7 @@ module.exports.CreateCustomEndpoints = function (url, obj) {
                         size,
                         totalElements,
                         totalPages,
-                        content,
+                        content
                     }));
                 }
             });
