@@ -13,15 +13,64 @@
 
 module.exports.CreateCustomEndpoints = function (url, obj) {
     // Add custom endpoints here
-    obj.app.get(url + 'custom', function (req, res) {
+    obj.app.get(url + 'api/agents', function (req, res) {
         if (isAuthenticated(obj, req, res)) {
-            res.status(200);
+            // Read query params.
+            let size = parseInt(req.query.size ?? '10', 10);
+            let page = parseInt(req.query.page ?? '0', 10);
+            // TODO Sorting
+            // let sort = req.query.sort ?? 'id';
+
+            // Determine content type.
             res.set({ 'Content-Type': 'application/json' });
-            res.send(JSON.stringify({ 'hey': 10 }));
+            obj.db.GetAllType('node', function(err, docs) {
+                if (err != null) {
+                    res.status(500);
+                    res.send(JSON.stringify({
+                        timestamp: new Date().toISOString().replace('Z', '+0000'),
+                        status: 500,
+                        error: 'Internal Server Error',
+                        message: '',
+                        path: 'api/agents'
+                    }));
+                } else {
+                    // All elements. We need to apply paging, filtering and sorting manually.
+                    let content = Array.isArray(docs) ? docs : [];
+                    // TODO Apply filtering, apply sorting.
+                    // Total number of elements.
+                    let totalElements = content.length;
+                    // Total number of pages.
+                    let totalPages = Math.ceil(content.length / size);
+                    // First page?
+                    let first = page === 0 || totalPages < 2;
+                    // Last page?
+                    let last = page >= (totalPages - 1);
+                    // Page number (zero based)
+                    let pageNumber = page <= (totalPages - 1) ? page : totalPages - 1;
+                    content = content.slice(page * size, page * size + size);
+                    res.status(200);
+                    res.send(JSON.stringify({
+                        empty: content.length === 0 ? true : false,
+                        first,
+                        last,
+                        number: pageNumber,
+                        numberOfElements: content.length,
+                        size,
+                        totalElements,
+                        totalPages,
+                        content,
+                    }));
+                }
+            });
         } else {
             res.status(403);
-            res.set({ 'Content-Type': 'application/json' });
-            res.send(JSON.stringify({ 'Forbidden': true }));
+            res.send(JSON.stringify({
+                timestamp: new Date().toISOString().replace('Z', '+0000'),
+                status: 403,
+                error: 'Forbidden',
+                message: '',
+                path: 'api/agents'
+            }));
         }
     });
 }
@@ -33,7 +82,6 @@ function isAuthenticated(obj, req, res) {
     }
 
     const domain = (req.url ? getDomain(req) : getDomain(res));
-    // TODO check for blocked user/ip etc.
     if (domain &&
         req.session &&
         (req.session.userid != null) &&
