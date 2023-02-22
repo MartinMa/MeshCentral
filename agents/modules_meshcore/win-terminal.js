@@ -49,7 +49,7 @@ function windows_terminal()
         
         // Register all required Kernel32 API functions.
         var kernel32Dll = GM.CreateNativeProxy('kernel32.dll');
-        kernel32Dll.CreateMethod('CreateFileA');
+        kernel32Dll.CreateMethod('CreateFileW');
         kernel32Dll.CreateMethod('GetProcessId');
         kernel32Dll.CreateMethod('ReadFile');
         kernel32Dll.CreateMethod('WriteFile');
@@ -57,10 +57,7 @@ function windows_terminal()
 
         var config = winptyDll.winpty_config_new(0, 0);
 
-        console.log('winpty_config_new success');
-
-        if (config == 0) {
-            console.log('ERROR');
+        if (config.Val == 0) {
             throw ('winpty_config_new failed');
         }
 
@@ -68,64 +65,53 @@ function windows_terminal()
         winptyDll.winpty_config_set_mouse_mode(config, WINPTY_MOUSE_MODE_AUTO);
         winptyDll.winpty_config_set_agent_timeout(config, 1000);
 
-        console.log('before open');
-
         var winpty = winptyDll.winpty_open(config, 0);
         winptyDll.winpty_config_free(config);
 
-        if (winpty == 0) {
-            console.log('ERROR');
+        if (winpty.Val == 0) {
             throw ('winpty_open failed');
         }
 
-        console.log('winpty_open success');
-
         var agentProcess = winptyDll.winpty_agent_process(winpty);
-        console.log('winpty_agent_process success');
-        var coninPipeName = winptyDll.winpty_conin_name(winpty);
-        var conoutPipeName = winptyDll.winpty_conout_name(winpty);
-        var conerrPipeName = winptyDll.winpty_conerr_name(winpty);
+        var coninPipeName = GM.CreateVariable(160);
+        coninPipeName = winptyDll.winpty_conin_name(winpty);
+        var conoutPipeName = GM.CreateVariable(162);
+        conoutPipeName = winptyDll.winpty_conout_name(winpty);
+        var conerrPipeName = GM.CreateVariable(162);
+        conerrPipeName = winptyDll.winpty_conerr_name(winpty);
 
-        console.log('Before CreateFileA: ' + coninPipeName.AnsiString);
-
-        var conin = kernel32Dll.CreateFileA(coninPipeName, GENERIC_WRITE, 0, 0, OPEN_EXISTING, 0, 0);
-        var conout = kernel32Dll.CreateFileA(conoutPipeName, GENERIC_READ, 0, 0, OPEN_EXISTING, 0, 0);
-        var conerr = kernel32Dll.CreateFileA(conerrPipeName, GENERIC_READ, 0, 0, OPEN_EXISTING, 0, 0);
-
-        console.log('Before winpty_spawn_config_new');
+        var conin = kernel32Dll.CreateFileW(coninPipeName, GENERIC_WRITE, 0, 0, OPEN_EXISTING, 0, 0);
+        var conout = kernel32Dll.CreateFileW(conoutPipeName, GENERIC_READ, 0, 0, OPEN_EXISTING, 0, 0);
+        var conerr = kernel32Dll.CreateFileW(conerrPipeName, GENERIC_READ, 0, 0, OPEN_EXISTING, 0, 0);
 
         var spawnConfig = winptyDll.winpty_spawn_config_new(WINPTY_SPAWN_FLAG_AUTO_SHUTDOWN, GM.CreateVariable(path, { wide: true }), 0, 0, 0, 0);
 
-        if (spawnConfig == 0) {
-            console.log('ERROR');
+        if (spawnConfig.Val == 0) {
             kernel32Dll.CloseHandle(conout);
             kernel32Dll.CloseHandle(conerr);
             kernel32Dll.CloseHandle(conin);
             throw ('winpty_spawn_config_new failed');
         }
 
-        console.log('winpty_spawn_config_new success');
-
         var process = GM.CreatePointer();
-        var spawnSuccess = winpty_spawn(
+        var spawnSuccess = winptyDll.winpty_spawn(
             winpty,
             spawnConfig,
-            process.Deref(),
+            process,
             0,
             0,
             0
         );
     
-        winpty_spawn_config_free(spawnConfig);
+        winptyDll.winpty_spawn_config_free(spawnConfig);
 
         if (!spawnSuccess) {
-            console.log('ERROR');
             throw ('winpty_spawn failed');
         }
 
-        console.log('I WAS HERE');
+        var processId = kernel32Dll.GetProcessId(process.Deref());
 
-        var processId = kernel32Dll.GetProcessId(process);
+        console.log('processId ' + processId.Val);
 
         //
         // Create a Stream Object, to be able to read/write data to WinPTY.
@@ -133,6 +119,7 @@ function windows_terminal()
         var ret = { _winpty: winpty, _input: conin, _output: conout, kernel32Dll: kernel32Dll };
         ret._process = process;
         ret._pid = processId;
+        console.log('before  var ds = new duplex');
         var ds = new duplex(
         {
             'write': function (chunk, flush)
@@ -155,12 +142,13 @@ function windows_terminal()
                 flush();
             }
         });
+        console.log('after var ds = new duplex');
         
         //
         // The ProcessInfo object is signaled when the process exits
         //
         ds._obj = ret;
-        ret._waiter = require('DescriptorEvents').addDescriptor(pi.Deref(0));
+        ret._waiter = require('DescriptorEvents').addDescriptor(process.Deref());
         ret._waiter.ds = ds;
         ret._waiter._obj = ret;
         ret._waiter.on('signaled', function ()
@@ -180,9 +168,12 @@ function windows_terminal()
         ds.__read = function __read()
         {
             // Asyncronously read data from WinPTY
-            this._rp = this.terminal.kernel32Dll.ReadFile.async(this.terminal._output.Deref(), this._rpbuf, this._rpbuf._size, this._rpbufRead, 0);                      
+            console.log('inside __read()');
+            this._rp = this.terminal.kernel32Dll.ReadFile.async(this.terminal._output.Deref(), this._rpbuf, this._rpbuf._size, this._rpbufRead, 0);
+            console.log('after ReadFile');
             this._rp.then(function ()
             {
+                console.log('inside ReadFile callback');
                 var len = this.parent._rpbufRead.toBuffer().readUInt32LE();
                 if (len <= 0) { return; }
 
@@ -191,6 +182,7 @@ function windows_terminal()
             });
             this._rp.parent = this;
         };
+        console.log('ds.__read();');
         ds.__read();
         return (ds);
     }
