@@ -125,7 +125,7 @@ function windows_terminal()
             'write': function (chunk, flush)
             {
                 var written = require('_GenericMarshal').CreateVariable(4);
-                this.terminal.kernel32Dll.WriteFile(this.terminal._input.Deref(), require('_GenericMarshal').CreateVariable(chunk), chunk.length, written, 0);
+                this.terminal.kernel32Dll.WriteFile(this.terminal._input, require('_GenericMarshal').CreateVariable(chunk), chunk.length, written, 0);
                 flush();
                 return (true);
             },
@@ -137,7 +137,7 @@ function windows_terminal()
                     kernel32Dll.CloseHandle(this.terminal.conout);
                     kernel32Dll.CloseHandle(this.terminal.conerr);
                     kernel32Dll.CloseHandle(this.terminal.conin);
-                    winptyDll.winpty_free(this._obj._winpty.Deref());
+                    winptyDll.winpty_free(this._obj._winpty);
                 }
                 flush();
             }
@@ -169,7 +169,7 @@ function windows_terminal()
         {
             // Asyncronously read data from WinPTY
             console.log('inside __read()');
-            this._rp = this.terminal.kernel32Dll.ReadFile.async(this.terminal._output.Deref(), this._rpbuf, this._rpbuf._size, this._rpbufRead, 0);
+            this._rp = this.terminal.kernel32Dll.ReadFile.async(this.terminal._output, this._rpbuf, this._rpbuf._size, this._rpbufRead, 0);
             console.log('after ReadFile');
             this._rp.then(function ()
             {
