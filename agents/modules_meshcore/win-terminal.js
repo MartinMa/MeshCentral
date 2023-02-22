@@ -45,6 +45,7 @@ function windows_terminal()
         winptyDll.CreateMethod('winpty_spawn_config_new');
         winptyDll.CreateMethod('winpty_spawn');
         winptyDll.CreateMethod('winpty_spawn_config_free');
+        winptyDll.CreateMethod('winpty_set_size');
         winptyDll.CreateMethod('winpty_free');
         
         // Register all required Kernel32 API functions.
@@ -114,7 +115,14 @@ function windows_terminal()
         var conerr = kernel32Dll.CreateFileW(conerrPipeName, GENERIC_READ, 0, 0, OPEN_EXISTING, 0, 0);
 
         // Allocate a WinPTY spawn config.
-        var spawnConfig = winptyDll.winpty_spawn_config_new(WINPTY_SPAWN_FLAG_AUTO_SHUTDOWN, GM.CreateVariable(path, { wide: true }), 0, 0, 0, 0);
+        var spawnConfig = winptyDll.winpty_spawn_config_new(
+            WINPTY_SPAWN_FLAG_AUTO_SHUTDOWN,         // [in] Spawn flags
+            GM.CreateVariable(path, { wide: true }), // [in, optional] App name
+            0,                                       // [in, optional] Command line arguments
+            0,                                       // [in, optional] Current working directory
+            0,                                       // [in, optional] Environment block passed to CreateProcess
+            0                                        // [out, optional] Error object
+        );
 
         // Check for failure.
         if (spawnConfig.Val == 0) {
@@ -126,13 +134,14 @@ function windows_terminal()
         }
 
         var process = GM.CreatePointer();
+        // Spawn the new process.
         var spawnSuccess = winptyDll.winpty_spawn(
-            winpty,      //
-            spawnConfig, //
-            process,     //
-            0,           //
-            0,           //
-            0            //
+            winpty,      // [in] WinPTY object
+            spawnConfig, // [in] Spawn config
+            process,     // [out, optional] Process
+            0,           // [out, optional] Thread
+            0,           // [out, optional] Value of GetLastError if CreateProcess fails.
+            0            // [out, optional] Error object
         );
     
         // Free the spawn config object after passing it to winpty_spawn.
@@ -149,15 +158,12 @@ function windows_terminal()
 
         var processId = kernel32Dll.GetProcessId(process.Deref());
 
-        console.log('processId ' + processId.Val);
-
         //
         // Create a Stream Object, to be able to read/write data to WinPTY.
         //
-        var ret = { _winpty: winpty, _input: conin, _output: conout, kernel32Dll: kernel32Dll };
+        var ret = { _winpty: winpty, _input: conin, _output: conout, _error: conerr, kernel32Dll: kernel32Dll };
         ret._process = process;
         ret._pid = processId;
-        console.log('before  var ds = new duplex');
         var ds = new duplex(
         {
             'write': function (chunk, flush)
@@ -165,22 +171,21 @@ function windows_terminal()
                 var written = require('_GenericMarshal').CreateVariable(4);
                 this.terminal.kernel32Dll.WriteFile(this.terminal._input, require('_GenericMarshal').CreateVariable(chunk), chunk.length, written, 0);
                 flush();
-                return (true);
+                return true;
             },
             'final': function (flush)
             {
                 if (this.terminal._process)
                 {
                     this.terminal._process = null;
-                    kernel32Dll.CloseHandle(this.terminal.conout);
-                    kernel32Dll.CloseHandle(this.terminal.conerr);
-                    kernel32Dll.CloseHandle(this.terminal.conin);
-                    winptyDll.winpty_free(this._obj._winpty);
+                    kernel32Dll.CloseHandle(this.terminal._input);
+                    kernel32Dll.CloseHandle(this.terminal._output);
+                    kernel32Dll.CloseHandle(this.terminal._error);
+                    winptyDll.winpty_free(this.terminal._winpty);
                 }
                 flush();
             }
         });
-        console.log('after var ds = new duplex');
         
         //
         // The ProcessInfo object is signaled when the process exits
@@ -194,11 +199,24 @@ function windows_terminal()
             // Child process has exited
             this.ds.push(null);
 
-            kernel32Dll.CloseHandle(conout);
-            kernel32Dll.CloseHandle(conerr);
-            kernel32Dll.CloseHandle(conin);
-            winptyDll.winpty_free(winpty);
+            kernel32Dll.CloseHandle(this._obj._input);
+            kernel32Dll.CloseHandle(this._obj._output);
+            kernel32Dll.CloseHandle(this._obj._error);
+            winptyDll.winpty_free(this._obj._winpty);
         });
+        ds.resizeTerminal = function (w, h)
+        {
+            var resizeSuccess = winptyDll.winpty_set_size(
+                winpty, // [in] WinPTY object
+                w,      // [in] Columns
+                h,      // [in] Rows
+                0       // [out, optional] Error object
+            );
+
+            if (!resizeSuccess) {
+                console.log('winpty_set_size failed');
+            }
+        };
 
         ds.terminal = ret;
         ds._rpbuf = GM.CreateVariable(4096);
@@ -206,12 +224,9 @@ function windows_terminal()
         ds.__read = function __read()
         {
             // Asyncronously read data from WinPTY
-            console.log('inside __read()');
             this._rp = this.terminal.kernel32Dll.ReadFile.async(this.terminal._output, this._rpbuf, this._rpbuf._size, this._rpbufRead, 0);
-            console.log('after ReadFile');
             this._rp.then(function ()
             {
-                console.log('inside ReadFile callback');
                 var len = this.parent._rpbufRead.toBuffer().readUInt32LE();
                 if (len <= 0) { return; }
 
@@ -220,9 +235,8 @@ function windows_terminal()
             });
             this._rp.parent = this;
         };
-        console.log('ds.__read();');
         ds.__read();
-        return (ds);
+        return ds;
     }
 
     // This evaluates whether or not the powershell binary exists
