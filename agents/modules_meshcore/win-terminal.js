@@ -55,57 +55,95 @@ function windows_terminal()
         kernel32Dll.CreateMethod('WriteFile');
         kernel32Dll.CreateMethod('CloseHandle');
 
-        var config = winptyDll.winpty_config_new(0, 0);
+        //
+        // Reference for WinPTY can be found at:
+        // https://github.com/rprichard/winpty
+        // https://github.com/rprichard/winpty/blob/0.4.3/src/include/winpty.h
+        //
 
+        // Allocate a WinPTY config.
+        var config = winptyDll.winpty_config_new(
+            0, // [in] Agent flags
+            0  // [out, optional] Config error object
+        );
+
+        // Check for failure.
         if (config.Val == 0) {
             throw ('winpty_config_new failed');
         }
 
+        // Set initial terminal size, mouse mode and agent timeout.
         winptyDll.winpty_config_set_initial_size(config, width, height);
         winptyDll.winpty_config_set_mouse_mode(config, WINPTY_MOUSE_MODE_AUTO);
+        // Amount of time to wait for the agent to startup and to wait for any given agent RPC request.
         winptyDll.winpty_config_set_agent_timeout(config, 1000);
 
-        var winpty = winptyDll.winpty_open(config, 0);
+        // Start the agent.
+        // This process will connect to the agent over a control pipe,
+        // and the agent will open data pipes (e.g. CONIN and CONOUT).
+        var winpty = winptyDll.winpty_open(
+            config, // [in] WinPTY config
+            0       // [out, optional] Error object
+        );
+
+        // Free the config object after passing it to winpty_open.
         winptyDll.winpty_config_free(config);
 
+        // Check for failure.
         if (winpty.Val == 0) {
             throw ('winpty_open failed');
         }
 
+        // Get a handle to the agent process.
+        // This value is valid for the lifetime of the winpty_t object.
+        // Do not close it.
         var agentProcess = winptyDll.winpty_agent_process(winpty);
-        var coninPipeName = GM.CreateVariable(160);
-        coninPipeName = winptyDll.winpty_conin_name(winpty);
-        var conoutPipeName = GM.CreateVariable(162);
-        conoutPipeName = winptyDll.winpty_conout_name(winpty);
-        var conerrPipeName = GM.CreateVariable(162);
-        conerrPipeName = winptyDll.winpty_conerr_name(winpty);
 
+        // Determine the names of named pipes used for terminal I/O.
+        // Each input or output direction uses a different half-duplex pipe.
+        // The agent creates these pipes, and the client can connect to them
+        // using ordinary I/O methods.
+        // The strings are freed when the winpty_t object is freed.
+        var coninPipeName = winptyDll.winpty_conin_name(winpty);
+        var conoutPipeName = winptyDll.winpty_conout_name(winpty);
+        var conerrPipeName = winptyDll.winpty_conerr_name(winpty);
+
+        // Open handles to the terminal pipes.
         var conin = kernel32Dll.CreateFileW(coninPipeName, GENERIC_WRITE, 0, 0, OPEN_EXISTING, 0, 0);
         var conout = kernel32Dll.CreateFileW(conoutPipeName, GENERIC_READ, 0, 0, OPEN_EXISTING, 0, 0);
         var conerr = kernel32Dll.CreateFileW(conerrPipeName, GENERIC_READ, 0, 0, OPEN_EXISTING, 0, 0);
 
+        // Allocate a WinPTY spawn config.
         var spawnConfig = winptyDll.winpty_spawn_config_new(WINPTY_SPAWN_FLAG_AUTO_SHUTDOWN, GM.CreateVariable(path, { wide: true }), 0, 0, 0, 0);
 
+        // Check for failure.
         if (spawnConfig.Val == 0) {
             kernel32Dll.CloseHandle(conout);
             kernel32Dll.CloseHandle(conerr);
             kernel32Dll.CloseHandle(conin);
+            winptyDll.winpty_free(winpty);
             throw ('winpty_spawn_config_new failed');
         }
 
         var process = GM.CreatePointer();
         var spawnSuccess = winptyDll.winpty_spawn(
-            winpty,
-            spawnConfig,
-            process,
-            0,
-            0,
-            0
+            winpty,      //
+            spawnConfig, //
+            process,     //
+            0,           //
+            0,           //
+            0            //
         );
     
+        // Free the spawn config object after passing it to winpty_spawn.
         winptyDll.winpty_spawn_config_free(spawnConfig);
 
+        // Check for failure.
         if (!spawnSuccess) {
+            kernel32Dll.CloseHandle(conout);
+            kernel32Dll.CloseHandle(conerr);
+            kernel32Dll.CloseHandle(conin);
+            winptyDll.winpty_free(winpty);
             throw ('winpty_spawn failed');
         }
 
