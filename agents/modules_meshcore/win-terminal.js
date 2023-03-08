@@ -54,6 +54,7 @@ function windows_terminal()
         kernel32Dll.CreateMethod('GetProcessId');
         kernel32Dll.CreateMethod('ReadFile');
         kernel32Dll.CreateMethod('WriteFile');
+        kernel32Dll.CreateMethod('CancelIoEx');
         kernel32Dll.CreateMethod('CloseHandle');
 
         //
@@ -178,9 +179,6 @@ function windows_terminal()
                 if (this.terminal._process)
                 {
                     this.terminal._process = null;
-                    kernel32Dll.CloseHandle(this.terminal._input);
-                    kernel32Dll.CloseHandle(this.terminal._output);
-                    kernel32Dll.CloseHandle(this.terminal._error);
                     winptyDll.winpty_free(this.terminal._winpty);
                 }
                 flush();
@@ -196,13 +194,19 @@ function windows_terminal()
         ret._waiter._obj = ret;
         ret._waiter.on('signaled', function ()
         {
+            kernel32Dll.CancelIoEx(this._obj._output, 0);
+
             // Child process has exited
             this.ds.push(null);
 
             kernel32Dll.CloseHandle(this._obj._input);
             kernel32Dll.CloseHandle(this._obj._output);
             kernel32Dll.CloseHandle(this._obj._error);
-            winptyDll.winpty_free(this._obj._winpty);
+
+            if (this._obj._process) {
+                this._obj._process = null;
+                winptyDll.winpty_free(this._obj._winpty);
+            }
         });
         ds.resizeTerminal = function (w, h)
         {
